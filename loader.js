@@ -38,7 +38,7 @@
     const loadingScreen = document.createElement('div');
     loadingScreen.id = 'game-loading-screen';
     // 背景を画像に変更
-    loadingScreen.style.cssText = "position:fixed; top:0; left:0; width:100%; height:100%; background: url('https://namnam2727.github.io/Fall_Gras/title.PNG') center/cover no-repeat; z-index:999999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#fff; font-family:sans-serif; transition: opacity 0.5s ease;";
+    loadingScreen.style.cssText = "position:fixed; top:0; left:0; width:100%; height:100%; background: url('https://cdn.gravity.place/aiugc/game/material/2026-07-10/a180d78d-d91f-4bb1-a0b9-d1df5777a393.jpeg') center/cover no-repeat; z-index:999999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#fff; font-family:sans-serif; transition: opacity 0.5s ease;";
     
     // 半透明の枠（パネル）を作成
     const panel = document.createElement('div');
