@@ -6,7 +6,6 @@
 
 window.HTP_About = {
     init: function(container, htpManager) {
-        // 3Dデモ画面は使用しないため停止・非表示化
         htpManager.stopDemo();
 
         const style = document.createElement('style');
@@ -69,6 +68,7 @@ window.HTP_About = {
                 display: inline-block;
                 transition: opacity 0.2s, transform 0.1s;
                 box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+                cursor: pointer;
             }
             .htp-about-download:active {
                 opacity: 0.8;
@@ -90,25 +90,49 @@ window.HTP_About = {
                     <span style="color:#ff4444;">❤️いいね</span>を押してね。<br><br>
                     不具合・ご意見・ご要望・感想等があれば、<br>
                     メッセージやコメントを送ってね。<br>
-                    <span style="color:#ffcc00; font-weight:bold;">特に、感想をくれるとめちゃくちゃ喜ぶよ！</span><br><br>
-                    プロフィールへは右上の[･･･]ボタンから<br>
-                    [ゲーム詳細]を選んだ画面の<br>
-                    アイコンをタップしてね！
-
+                    <span style="color:#ffcc00; font-weight:bold;">特に、感想をくれるとめちゃくちゃ喜ぶよ！</span>
                 </div>
+
+                <div class="htp-about-download" id="openGravityProfileBtn">プロフィールを開く</div>
             </div>
         `;
+
+        const profileBtn = container.querySelector('#openGravityProfileBtn');
+        if (profileBtn) {
+            profileBtn.addEventListener('click', function(event) {
+                event.preventDefault();
+                
+                const userId = 1539168218;
+                const webUrl = "https://www.gravity.place/user/1539168218";
+                
+                const paramObj = {
+                    uid: userId,
+                    selectedIndex: 0,
+                    web_url: webUrl,
+                    s: "web",
+                    b: "user"
+                };
+                const innerUrl = "usercenter?0=" + encodeURIComponent(JSON.stringify(paramObj));
+                const deepLink = "slme://internal?type=5&ani=1&url=" + encodeURIComponent(innerUrl);
+                
+                let i = document.createElement('iframe');
+                i.style.cssText = 'position:absolute;width:0;height:0;opacity:0';
+                i.src = deepLink;
+                document.body.appendChild(i);
+                
+                setTimeout(function() { 
+                    i.remove(); 
+                }, 5000);
+            });
+        }
     },
 
     updateScenario: function(time, delta, demo) {
-        // 3Dデモを使用しないため処理なし
     },
 
     onWarp: function(warpX, warpZ) {
-        // 処理なし
     },
 
     cleanup: function(htpManager) {
-        // 処理なし
     }
 };
