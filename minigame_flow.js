@@ -2,6 +2,8 @@
 // minigame_flow.js
 // ミニゲームの進行フローとUI遷移管理（3分割の2/3）
 // ★通信を使わず、ローカルのMinigameListから説明文を取得して表示
+// ★PLAYING状態での途中入室時、プラグインを正しく再現・開始する処理を追加
+// ★カウントダウンと3,2,1演出を setInterval から requestAnimationFrame と絶対時間計算に修正し、タイマーのズレを解消
 // =====================================
 
 window.MinigameManager = window.MinigameManager || {};
@@ -208,7 +210,6 @@ Object.assign(window.MinigameManager, {
 
         document.getElementById('mg-popup-title').innerText = p.title;
 
-        // ★ 通信データには含めず、ローカルのリストから説明文を検索して表示
         const descEl = document.getElementById('mg-popup-desc');
         if (descEl) {
             const listData = window.MinigameList ? window.MinigameList.find(g => g.id === p.gameId) : null;
@@ -369,6 +370,19 @@ Object.assign(window.MinigameManager, {
                     
                     if (this.state === 'COUNTDOWN' && typeof this.currentPlugin.init === 'function') {
                         this.currentPlugin.init(this.currentProposal.settings);
+                    } 
+                    // ★追加：PLAYING状態での途中参加時のプラグイン再現と残り時間同期
+                    else if (this.state === 'PLAYING' && typeof this.currentPlugin.init === 'function') {
+                        this.currentPlugin.init(this.currentProposal.settings);
+                        if (typeof this.currentPlugin.start === 'function') {
+                            this.currentPlugin.start();
+                        }
+                        if (this.targetEndTime > 0) {
+                            const actualRemainSec = (this.targetEndTime - Date.now()) / 1000;
+                            if (actualRemainSec > 0) {
+                                this.currentPlugin.remainTime = actualRemainSec;
+                            }
+                        }
                     }
                 }
             });
@@ -393,10 +407,12 @@ Object.assign(window.MinigameManager, {
         const updateTimer = () => {
             if (this.state !== 'COUNTDOWN') return; 
             
-            const remain = Math.ceil((this.targetStartTime - Date.now()) / 1000);
+            // ★修正: 本当の開始時刻(targetStartTime)から4秒を引いた時間を、UI上の待機目標とする
+            const remainToAnim = this.targetStartTime - 4000 - Date.now();
+            const remainSec = Math.ceil(remainToAnim / 1000);
             
-            if (remain > 0) {
-                countText.innerText = remain;
+            if (remainSec > 0) {
+                countText.innerText = remainSec;
                 requestAnimationFrame(updateTimer); 
             } else {
                 overlay.style.display = 'none';
@@ -504,27 +520,47 @@ Object.assign(window.MinigameManager, {
         centerMsg.style.cssText = 'position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); font-size:100px; color:white; font-weight:bold; text-shadow:0 0 20px #ffaa00; z-index:10000; pointer-events:none;';
         document.body.appendChild(centerMsg);
 
-        let startCount = 3;
-        centerMsg.innerText = startCount;
+        // ★修正: setIntervalを廃止し、targetStartTimeとの絶対時間計算で正確に同期させる
+        let isPluginStarted = false;
         
-        const startTimer = setInterval(() => {
-            startCount--;
-            if (startCount > 0) {
-                centerMsg.innerText = startCount;
-            } else if (startCount === 0) {
-                centerMsg.innerText = "START!!";
-                centerMsg.style.color = "#ffaa00";
-                centerMsg.style.fontSize = "120px";
-            } else {
-                clearInterval(startTimer);
+        const updateStartAnim = () => {
+            if (this.state !== 'PLAYING') {
                 centerMsg.remove();
-                if (typeof window.addLog === 'function') window.addLog('<span style="color:#00ff00;">ゲームが開始されました！</span>', 'sys');
-                
-                if (window.ItemSystem) window.ItemSystem.canPickup = true;
-                if (this.currentPlugin && typeof this.currentPlugin.start === 'function') {
-                    this.currentPlugin.start();
-                }
+                return;
             }
-        }, 1000);
+            
+            const remainToStart = this.targetStartTime - Date.now();
+            
+            if (remainToStart > 3000) {
+                centerMsg.innerText = "3";
+            } else if (remainToStart > 2000) {
+                centerMsg.innerText = "2";
+            } else if (remainToStart > 1000) {
+                centerMsg.innerText = "1";
+            } else if (remainToStart > 0) {
+                if (centerMsg.innerText !== "START!!") {
+                    centerMsg.innerText = "START!!";
+                    centerMsg.style.color = "#ffaa00";
+                    centerMsg.style.fontSize = "120px";
+                }
+            } else {
+                if (!isPluginStarted) {
+                    isPluginStarted = true;
+                    centerMsg.remove();
+                    if (typeof window.addLog === 'function') window.addLog('<span style="color:#00ff00;">ゲームが開始されました！</span>', 'sys');
+                    
+                    if (window.ItemSystem) window.ItemSystem.canPickup = true;
+                    if (this.currentPlugin && typeof this.currentPlugin.start === 'function') {
+                        this.currentPlugin.start();
+                    }
+                }
+                return; // アニメーション終了
+            }
+            
+            requestAnimationFrame(updateStartAnim);
+        };
+        updateStartAnim();
     }
 });
+
+

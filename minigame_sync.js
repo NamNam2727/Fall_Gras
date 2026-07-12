@@ -1,7 +1,8 @@
 // =====================================
 // minigame_sync.js
 // ミニゲームの通信・同期管理（3分割の1/3）
-// ★スコアを受信した際に通信エラーフラグ(isError)を解除する処理を追加
+// ★途中入室時の状態同期にtargetEndTimeを追加し、PLAYING時の再現とログ表示を実装
+// ★targetStartTime を 3,2,1 演出完了後の「本当の開始時刻(+14秒)」に修正
 // =====================================
 
 window.MinigameManager = window.MinigameManager || {};
@@ -32,13 +33,13 @@ Object.assign(window.MinigameManager, {
         } else if (msg.type === 'mg_ready') {
             if (typeof this.receiveReady === 'function') this.receiveReady(msg.timestamp);
         } else if (msg.type === 'mg_sync_state') {
-            if (typeof this.syncState === 'function') this.syncState(msg.state, msg.targetStartTime, msg.proposal, msg.votes);
+            // ★引数に msg.targetEndTime を追加
+            if (typeof this.syncState === 'function') this.syncState(msg.state, msg.targetStartTime, msg.proposal, msg.votes, msg.targetEndTime);
         } else if (msg.type === 'mg_plugin_sync') {
             if (this.currentPlugin && typeof this.currentPlugin.handleNetwork === 'function') {
                 this.currentPlugin.handleNetwork(msg.data);
             }
         } else if (msg.type === 'mg_update_score') {
-            // リザルト用の「本スコア」を受信
             const data = this.resultData.find(d => String(d.id) === String(msg.userId));
             if (data) {
                 if (msg.isRetired && !data.isRetired && typeof window.addLog === 'function') {
@@ -48,7 +49,7 @@ Object.assign(window.MinigameManager, {
                 data.scoreText = msg.scoreText;
                 data.statusText = msg.statusText; 
                 data.isRetired = msg.isRetired;
-                data.isError = false; // ★追加：本スコアを受信したので通信エラーを解除する
+                data.isError = false; 
 
                 if (this.state === 'RESULT' || (document.getElementById('mg-result-window') && document.getElementById('mg-result-window').style.display === 'flex')) {
                     if (window.MinigameUI && typeof window.MinigameUI.showResult === 'function') {
@@ -60,7 +61,6 @@ Object.assign(window.MinigameManager, {
         } else if (msg.type === 'mg_request_score') {
             if (typeof this.replyMyScore === 'function') this.replyMyScore();
         } else if (msg.type === 'mg_reply_score') {
-            // メンバーリスト用の「現在のスコア」を受信
             const data = this.resultData.find(d => String(d.id) === String(msg.userId));
             if (data) {
                 data.currentScoreText = msg.currentScoreText;
@@ -78,7 +78,7 @@ Object.assign(window.MinigameManager, {
         }
     },
 
-    syncState: function(remoteState, targetStartTime, proposal, remoteVotes) {
+    syncState: function(remoteState, targetStartTime, proposal, remoteVotes, targetEndTime) {
         if (this.state !== 'IDLE' && this.state !== 'PROPOSING') return;
 
         this.currentProposal = proposal;
@@ -106,6 +106,15 @@ Object.assign(window.MinigameManager, {
             this.state = remoteState;
             this.myVote = false; 
             
+            // ★途中入室時の時刻同期
+            if (targetStartTime) this.targetStartTime = targetStartTime;
+            if (proposal && proposal.settings && proposal.settings.time) {
+                const timeLimitSec = parseInt(proposal.settings.time, 10) * 60;
+                this.targetEndTime = this.targetStartTime + (timeLimitSec * 1000);
+            } else if (targetEndTime) {
+                this.targetEndTime = targetEndTime;
+            }
+
             if (typeof this.closeAllViews === 'function') this.closeAllViews();
             if (typeof this.enterSpectatorMode === 'function') this.enterSpectatorMode();
             if (typeof this.loadPlugin === 'function') this.loadPlugin();
@@ -115,11 +124,65 @@ Object.assign(window.MinigameManager, {
             } else if (remoteState === 'PLAYING') {
                 const mgBtn = document.getElementById('minigame-btn');
                 if (mgBtn) {
-                    mgBtn.classList.remove('detail-mode');
-                    mgBtn.classList.add('abort-mode');
                     mgBtn.innerText = '観戦モード';
                     mgBtn.classList.add('spectator-mode');
                 }
+                
+                // ★途中入室時のログと参加者リスト復元
+                if (typeof window.addLog === 'function') {
+                    window.addLog('<span style="color:#ffaa00; font-weight:bold;">現在ミニゲームが進行しているため、終了まで観戦モードでお待ちください。</span>', 'sys');
+                }
+                
+                this.resultData = [];
+                let allUsers = [];
+                
+                if (window.GameState && window.GameState.userInfo) {
+                    allUsers.push({
+                        user_id: window.GameState.userInfo.user_id,
+                        name: window.GameState.userInfo.name || window.GameState.userInfo.user_name || "Player",
+                        portrait: window.GameState.userInfo.portrait || window.GameState.userInfo.portait || ""
+                    });
+                } else {
+                    allUsers.push({ user_id: 'local', name: 'Player', portrait: '' });
+                }
+
+                if (window.MultiplayerManager && window.MultiplayerManager.otherPlayers) {
+                    for (let id in window.MultiplayerManager.otherPlayers) {
+                        let op = window.MultiplayerManager.otherPlayers[id];
+                        allUsers.push({
+                            user_id: op.id,
+                            name: op.name || "Player",
+                            portrait: op.icon || ""
+                        });
+                    }
+                }
+
+                allUsers.forEach(u => {
+                    let isParticipating = false;
+                    const uidStr = String(u.user_id);
+                    if (this.currentProposal && this.currentProposal.votes && this.currentProposal.votes[uidStr] === true) {
+                        isParticipating = true;
+                    }
+                    if (isParticipating) {
+                        this.resultData.push({
+                            id: uidStr,
+                            name: u.name,
+                            icon: u.portrait,
+                            scoreText: "", 
+                            scoreValue: null, 
+                            statusText: "", 
+                            isRetired: false,
+                            isError: false,
+                            rank: 0,
+                            currentScoreText: "計算中...",
+                            currentScoreValue: 0,
+                            currentStatusText: ""
+                        });
+                    }
+                });
+
+                const timerUI = document.getElementById('mg-timer-ui');
+                if (timerUI) timerUI.style.display = 'block';
             }
         }
     },
@@ -149,7 +212,8 @@ Object.assign(window.MinigameManager, {
     },
 
     calcTargetTimes: function() {
-        this.targetStartTime = this.earliestReadyTime + 10000;
+        // ★修正: 10秒待機 + 4秒(3,2,1演出) を足した「本当のゲーム開始時刻」を targetStartTime(シード値) にする
+        this.targetStartTime = this.earliestReadyTime + 14000;
         
         if (this.currentProposal && this.currentProposal.settings && this.currentProposal.settings.time) {
             const timeLimitSec = parseInt(this.currentProposal.settings.time, 10) * 60;
@@ -157,3 +221,5 @@ Object.assign(window.MinigameManager, {
         }
     }
 });
+
+
