@@ -1,7 +1,8 @@
 // =========================================================
 // multiplayer.js
 // メンバーリストUIの生成とマルチプレイ管理
-// ★途中入室者にtargetEndTimeを含めたゲーム情報を送信し、各プレイヤーからスコア共有も送るように修正
+// ★ 途中入室者向けの「マップ同期レイヤー」のタイムアウト制御を強化
+// ★ 同期完了までの間、画面を覆ってマップを見せない処理を追加
 // =========================================================
 
 window.MultiplayerManager = {
@@ -9,6 +10,11 @@ window.MultiplayerManager = {
     lastSentPos: { x: 0, y: 0, z: 0 },
     lastSendTime: 0,
     sendInterval: 100, 
+    
+    // 途中入室用同期レイヤー
+    syncOverlay: null,
+    isSyncing: false,
+    syncTimeout: null,
 
     initUI: function() {
         const style = document.createElement('style');
@@ -113,23 +119,16 @@ window.MultiplayerManager = {
                 const item = document.createElement('div');
                 item.className = 'member-item';
                 
-                // ★追加: タップできるようにカーソルを変更し、プロフィール遷移処理を組み込む
                 item.style.cursor = 'pointer';
                 item.addEventListener('click', () => {
                     const uidStr = String(user.user_id);
-                    if (uidStr === 'local') return; // テストユーザーの場合は遷移しない
+                    if (uidStr === 'local') return; 
                     
                     const uid = Number(user.user_id);
                     if (!uid || isNaN(uid)) return;
 
                     const webUrl = "https://www.gravity.place/user/" + uid;
-                    const paramObj = {
-                        uid: uid,
-                        selectedIndex: 0,
-                        web_url: webUrl,
-                        s: "web",
-                        b: "user"
-                    };
+                    const paramObj = { uid: uid, selectedIndex: 0, web_url: webUrl, s: "web", b: "user" };
                     const innerUrl = "usercenter?0=" + encodeURIComponent(JSON.stringify(paramObj));
                     const deepLink = "slme://internal?type=5&ani=1&url=" + encodeURIComponent(innerUrl);
 
@@ -260,6 +259,48 @@ window.MultiplayerManager = {
         memberWindow.addEventListener('touchstart', preventTouch, {passive: false});
     },
 
+    // ★ 途中入室用オーバーレイの表示と同期開始
+    startSync: function() {
+        if (this.isSyncing) return;
+        this.isSyncing = true;
+        
+        this.syncOverlay = document.createElement('div');
+        this.syncOverlay.id = 'room-sync-overlay';
+        this.syncOverlay.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background: #000; z-index:999999; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#fff; font-family:sans-serif; transition: opacity 0.5s ease;';
+        this.syncOverlay.innerHTML = '<div style="font-size:24px; font-weight:bold; color:#00ffff; margin-bottom: 20px;">ルーム情報を同期中...</div><div class="loader-spinner" style="width: 50px; height: 50px; border: 5px solid #333; border-top: 5px solid #00ffff; border-radius: 50%; animation: spin 1s linear infinite;"></div><style>@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }</style>';
+        document.body.appendChild(this.syncOverlay);
+        
+        this.requestPositions(); // 他プレイヤーに状況を要求
+        
+        // 3秒経過しても誰も答えてくれなかったら強制的に初期マップで開始
+        this.syncTimeout = setTimeout(() => {
+            if (this.isSyncing) {
+                if (typeof window.addLog === 'function') window.addLog('<span style="color:#aaaaaa;">同期応答がありませんでした。標準マップで開始します。</span>', 'sys');
+                if (window.MapManager) window.MapManager.setupInitialMap('default');
+                this.hideSyncOverlay();
+            }
+        }, 3000);
+    },
+
+    hideSyncOverlay: function() {
+        if (!this.isSyncing) return;
+        this.isSyncing = false;
+        if (this.syncTimeout) clearTimeout(this.syncTimeout);
+        
+        if (this.syncOverlay) {
+            this.syncOverlay.style.opacity = '0';
+            setTimeout(() => {
+                if (this.syncOverlay && this.syncOverlay.parentNode) {
+                    this.syncOverlay.parentNode.removeChild(this.syncOverlay);
+                }
+                this.syncOverlay = null;
+            }, 500);
+        }
+        
+        // 同期が完了してマップが生成されたら自分の位置情報を送信開始
+        setTimeout(() => { this.forceSendPos(); }, 500);
+    },
+
     sendData: function(data) {
         if (typeof window.sendMultiplayerMessage === 'function') {
             window.sendMultiplayerMessage(data);
@@ -271,7 +312,7 @@ window.MultiplayerManager = {
     },
     
     forceSendPos: function() {
-        if (typeof player === 'undefined' || !player) return;
+        if (typeof player === 'undefined' || !player || this.isSyncing) return;
         if (window.isSpectatorMode) return; 
         
         const nowTime = Date.now();
@@ -296,7 +337,7 @@ window.MultiplayerManager = {
     },
 
     update: function(delta) {
-        if (typeof player === 'undefined' || !player) return;
+        if (typeof player === 'undefined' || !player || this.isSyncing) return;
 
         if (!window.isSpectatorMode) {
             const now = performance.now();
@@ -342,6 +383,10 @@ window.MultiplayerManager = {
             }
             this.forceSendPos();
             
+            if (window.MapManager && window.MapManager.state === 'PROPOSING') {
+                window.MapManager.cancelProposal("途中入室者がいたためマップ変更を取り下げました。");
+            }
+            
         } else if (type === 'aitools_game_exitroom') {
             const userName = data.user_name || data.name || '誰か';
             if (typeof window.addLog === 'function') {
@@ -356,6 +401,8 @@ window.MultiplayerManager = {
         } else if (type === 'aitools_game_sendmsg') {
             try {
                 const msgData = JSON.parse(data.msg_data);
+                
+                // ★ map_sync_current 等は map_manager 内で受け取り、そこから hideSyncOverlay を呼ぶためここではスルー
                 
                 if (msgData.type === 'move') {
                     this.updatePlayerPos(data.user_id, msgData);
@@ -376,6 +423,14 @@ window.MultiplayerManager = {
                     if (window.isSpectatorMode) {
                         this.sendData({ type: 'mg_spectator', isSpectator: true });
                     }
+                    
+                    // 現在のマップ情報を確実に送る
+                    if (window.MapManager) {
+                        this.sendData({
+                            type: 'map_sync_current',
+                            mapId: window.MapManager.currentMapId
+                        });
+                    }
 
                     if (window.MinigameManager && window.MinigameManager.state !== 'IDLE' && window.MinigameManager.currentProposal) {
                         const myId = String((window.GameState && window.GameState.userInfo) ? window.GameState.userInfo.user_id : 'local');
@@ -384,13 +439,12 @@ window.MultiplayerManager = {
                                 type: 'mg_sync_state',
                                 state: window.MinigameManager.state,
                                 targetStartTime: window.MinigameManager.targetStartTime,
-                                targetEndTime: window.MinigameManager.targetEndTime, // ★追加
+                                targetEndTime: window.MinigameManager.targetEndTime,
                                 proposal: window.MinigameManager.currentProposal,
                                 votes: window.MinigameManager.currentProposal.votes
                             });
                         }
                         
-                        // ★追加: プレイ中なら各自が自分のスコアを送信
                         if (window.MinigameManager.state === 'PLAYING') {
                             if (typeof window.MinigameManager.replyMyScore === 'function') {
                                 window.MinigameManager.replyMyScore();
@@ -417,6 +471,10 @@ window.MultiplayerManager = {
                 } else if (msgData.type.startsWith('item_')) {
                     if (window.ItemSystem) {
                         window.ItemSystem.handleNetworkMessage(msgData);
+                    }
+                } else if (msgData.type.startsWith('map_')) {
+                    if (window.MapManager) {
+                        window.MapManager.handleNetworkMessage(msgData);
                     }
                 } else if (msgData.type.startsWith('mg_')) {
                     if (window.MinigameManager) {
@@ -534,4 +592,5 @@ window.onMultiplayerMessage = function(payload) {
         window.MultiplayerManager.handleMessage(payload);
     }
 };
+
 

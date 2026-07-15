@@ -1,20 +1,17 @@
 // =====================================
 // main.js
 // 水平Raycasterを用いた正確な壁・坂道判定と姿勢制御
-// ★オートカメラ: クアッド(4点)レイキャストを導入し、斜め後ろの壁によるグラグラも完全解消
-// ★カメラ操作: スライダー10〜100は以前の計算式を完全維持し、0〜10のみスレスレ貫通ズームを追加
-// ★リファクタリング: コンテキスト(Context)ベースのアーキテクチャへ移行し、
-//   How To Playなどの別空間でも本編ロジックを100%再利用可能にしました。
+// ★ マップ生成のタイミングを同期レイヤーの完了後、または一番最初の入室時に完全に分離しました
 // =====================================
 
-let mapMesh;
+window.mapMesh = null; // グローバルなマップメッシュ参照
 let raycaster = new THREE.Raycaster();
 let downVector = new THREE.Vector3(0, -1, 0);
 
 window.currentFacingAngle = 0; 
 
 // ==========================================
-// 本編用コンテキスト (グローバル変数のラッピング)
+// 本編用コンテキスト
 // ==========================================
 window.mainContext = {
     get player() { return player; },
@@ -36,7 +33,6 @@ window.mainContext = {
     isDemo: false
 };
 
-// コンテキスト内のシーンから地形メッシュを取得
 function getTerrainMeshes(ctx) {
     let meshes = [];
     if (!ctx || !ctx.scene) return meshes;
@@ -82,19 +78,33 @@ window.initThreeJS = function() {
     dirLight.shadow.mapSize.width = 1024; dirLight.shadow.mapSize.height = 1024;
     scene.add(dirLight);
 
-    if (window.MapGenerator && typeof window.MapGenerator.createMesh === 'function') {
-        mapMesh = window.MapGenerator.createMesh();
-        scene.add(mapMesh);
-    }
-
     initPlayer();
-
+    
+    // ★ 修正: ここでは即座にマップを作らず、入室順によって分岐させる
     if (window.MultiplayerManager) {
         window.MultiplayerManager.initExistingPlayers();
-        setTimeout(() => {
-            window.MultiplayerManager.requestPositions();
-            window.MultiplayerManager.forceSendPos(); 
-        }, 1000);
+        
+        // 自分以外に人がいれば「後から入室した」と判定
+        const isLateJoin = Object.keys(window.MultiplayerManager.otherPlayers).length > 0;
+        
+        if (isLateJoin) {
+            // 同期レイヤーを出し、マップを作らずに待機
+            window.MultiplayerManager.startSync();
+        } else {
+            // 自分が最初の一人なら、フェードなしで即座に初期マップを作る
+            if (window.MapManager && typeof window.MapManager.setupInitialMap === 'function') {
+                window.MapManager.setupInitialMap('default');
+            }
+            setTimeout(() => {
+                window.MultiplayerManager.requestPositions();
+                window.MultiplayerManager.forceSendPos(); 
+            }, 1000);
+        }
+    } else {
+        // オフライン・エラー時は即座に初期マップを作る
+        if (window.MapManager && typeof window.MapManager.setupInitialMap === 'function') {
+            window.MapManager.setupInitialMap('default');
+        }
     }
 
     window.addEventListener('keydown', (e) => {
@@ -122,6 +132,11 @@ window.onWindowResize = function() {
 
 window.animate = function() {
     requestAnimationFrame(window.animate);
+    
+    // ★追加: 途中入室の同期画面中はキャラクター等を動かさず完全に停止させる
+    if (window.MultiplayerManager && window.MultiplayerManager.isSyncing) {
+        return;
+    }
     
     const rawDelta = clock.getDelta();
     const delta = Math.min(rawDelta, 0.05); 
@@ -167,15 +182,11 @@ function getGroundInfo(terrainMeshes, playerPosition, pRadius, myStepHeight) {
     return { currentGroundY, groundNormal };
 }
 
-// ==========================================
-// コアロジック: プレイヤーの更新 (Context依存)
-// ==========================================
 window.updatePlayer = function(delta, ctx = window.mainContext) {
     const rotationSpeed = 12; 
     let pRadius = typeof playerRadius !== 'undefined' ? playerRadius : 1.2;
     let myStepHeight = typeof stepHeight !== 'undefined' ? stepHeight : 1.5;
     
-    // デモではチャット吹き出しの処理をスキップ
     if (!ctx.isDemo && ctx.player && ctx.player.chatTimer > 0) {
         ctx.player.chatTimer -= delta;
         if (ctx.player.chatTimer <= 0 && ctx.player.chatSprite) {
@@ -220,7 +231,6 @@ window.updatePlayer = function(delta, ctx = window.mainContext) {
 
     let isFalling = (ctx.isJumping && ctx.player.position.y > currentGroundY + 3.0);
 
-    // デモでは他プレイヤーとの衝突判定をスキップ
     if (!ctx.isDemo && window.MultiplayerManager && !isFalling && !ctx.isSpectatorMode) {
         const others = window.MultiplayerManager.otherPlayers;
         for (let id in others) {
@@ -361,9 +371,13 @@ window.updatePlayer = function(delta, ctx = window.mainContext) {
         }
         
         if (ctx.player.position.y < -30) {
-            ctx.player.position.set(0, 20, 0); 
-            ctx.isJumping = true; 
-            ctx.verticalVelocity = 0;
+            if (!ctx.isDemo && window.MapManager && typeof window.MapManager.respawnPlayer === 'function') {
+                window.MapManager.respawnPlayer();
+            } else {
+                ctx.player.position.set(0, 20, 0); 
+                ctx.isJumping = true; 
+                ctx.verticalVelocity = 0;
+            }
             
             if (!ctx.isDemo && window.MinigameManager && window.MinigameManager.state === 'PLAYING') {
                 if (!ctx.isSpectatorMode) {
@@ -379,7 +393,6 @@ window.updatePlayer = function(delta, ctx = window.mainContext) {
     ctx.player.quaternion.slerp(tiltQuat.multiply(rotQuat), rotationSpeed * delta);
 };
 
-// スライダー値からカメラ位置を計算する関数 (Contextのパラメータを優先)
 function getCameraPosBySlider(val, cAngle, playerPos, ctx) {
     let baseDist = (ctx && typeof ctx.cameraDistance !== 'undefined') ? ctx.cameraDistance : (typeof cameraDistance !== 'undefined' ? cameraDistance : 5);
     let baseHeight = (ctx && typeof ctx.cameraHeight !== 'undefined') ? ctx.cameraHeight : (typeof cameraHeight !== 'undefined' ? cameraHeight : 15);
@@ -409,9 +422,6 @@ function getCameraPosBySlider(val, cAngle, playerPos, ctx) {
     );
 }
 
-// ==========================================
-// コアロジック: カメラの更新 (Context依存)
-// ==========================================
 window.updateCamera = function(instant, delta = 0.016, ctx = window.mainContext) {
     let cAngle = ctx.cameraAngle || 0;
     
@@ -498,7 +508,6 @@ window.updateCamera = function(instant, delta = 0.016, ctx = window.mainContext)
         }
     }
 
-    // ★修正箇所：引数に ctx.player.position を渡し忘れていたためNaNになり落ちていたバグを修正
     const targetCamPos = getCameraPosBySlider(ctx.cameraSliderValue, cAngle, ctx.player.position, ctx);
     
     if (instant) ctx.camera.position.copy(targetCamPos);
@@ -508,3 +517,5 @@ window.updateCamera = function(instant, delta = 0.016, ctx = window.mainContext)
     lookTarget.y += 1.0;
     ctx.camera.lookAt(lookTarget);
 };
+
+
