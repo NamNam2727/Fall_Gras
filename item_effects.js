@@ -141,19 +141,33 @@ window.ItemEffects = {
         const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
         const mesh = new THREE.Mesh(geo, mat);
         
-        const raycaster = new THREE.Raycaster(new THREE.Vector3(pos.x, pos.y + bs, pos.z), new THREE.Vector3(0, -1, 0));
+        // ★変更箇所：起点をスケールに応じた少し高めの位置にし、埋もれを防止
+        const raycaster = new THREE.Raycaster(new THREE.Vector3(pos.x, pos.y + bs * 1.5, pos.z), new THREE.Vector3(0, -1, 0));
         
-        // ★ 変更箇所
-        let terrainMesh = window.mapMesh || (scene.children.find(c => c.userData && c.userData.isTerrain) || null);
+        // ★変更箇所：複数の地形やグループ化された地形（サバイバル用など）全てに対応
+        let terrainMeshes = [];
+        scene.children.forEach(c => {
+            if (c.visible) {
+                if (c.userData && c.userData.isTerrain) {
+                    terrainMeshes.push(c);
+                } else if (c.isGroup || c.type === 'Group') {
+                    c.children.forEach(child => {
+                        if (child.visible && child.userData && child.userData.isTerrain) {
+                            terrainMeshes.push(child);
+                        }
+                    });
+                }
+            }
+        });
         
-        if (terrainMesh) {
-            const intersects = raycaster.intersectObject(terrainMesh, false);
+        if (terrainMeshes.length > 0) {
+            const intersects = raycaster.intersectObjects(terrainMeshes, false);
             if (intersects.length > 0) {
                 const hit = intersects[0];
                 mesh.position.copy(hit.point);
                 
                 let normal = hit.face.normal.clone();
-                let normalMatrix = new THREE.Matrix3().getNormalMatrix(terrainMesh.matrixWorld);
+                let normalMatrix = new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld);
                 normal.applyMatrix3(normalMatrix).normalize();
                 
                 mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
@@ -213,7 +227,7 @@ window.ItemEffects = {
                 let rayOrigin = new THREE.Vector3(player.position.x, player.position.y + 1.5, player.position.z);
                 let ray = new THREE.Raycaster(rayOrigin, this.knockback.dir);
                 
-                // ★ 変更箇所
+                // ★ 変更不可箇所
                 let terrainMap = window.mapMesh || (scene.children.find(c => c.userData && c.userData.isTerrain) || null);
                 
                 let canMove = true;
