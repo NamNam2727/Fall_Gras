@@ -187,9 +187,13 @@ window.MinigamePlugins['hot_zone'] = {
             this.respawnTimer -= delta;
             
             if (typeof player !== 'undefined' && player) {
-                if (window.moveVector) window.moveVector.set(0, 0);   
-                player.position.x = 0;
-                player.position.z = 0;
+                if (window.moveVector) window.moveVector.set(0, 0);  
+                
+                if (window.MapManager && typeof window.MapManager.getSpawnPosition === 'function') {
+                    const spawnPos = window.MapManager.getSpawnPosition(window.MapManager.currentMapId);
+                    player.position.x = spawnPos.x;
+                    player.position.z = spawnPos.z;
+                }
                 
                 if (window.ItemSystem) window.ItemSystem.isOnNet = true;
 
@@ -332,13 +336,18 @@ window.MinigamePlugins['hot_zone'] = {
             window.addLog('<span style="color:#ffaa00;">落下ペナルティ！ 3秒間動けません。</span>', 'sys');
         }
         
+
         if (typeof player !== 'undefined' && player) {
-            player.position.set(0, 20, 0); 
-            window.verticalVelocity = 0;
-            window.isJumping = true; 
-            
+            if (window.MapManager && typeof window.MapManager.respawnPlayer === 'function') {
+                window.MapManager.respawnPlayer();
+            } else {
+                player.position.set(0, 20, 0); 
+                window.verticalVelocity = 0;
+                window.isJumping = true; 
+            }
             if (window.ItemSystem) window.ItemSystem.isOnNet = true;
         }
+
         
         if (window.MultiplayerManager && typeof window.MultiplayerManager.forceSendPos === 'function') {
             window.MultiplayerManager.forceSendPos();
